@@ -1,0 +1,407 @@
+/*
+ * "Summertime" by Diego Rodriguez aka Inferno - 2017
+ * Based on "Seascape" by Alexander Alekseev aka TDM - 2014
+ * https://www.shadertoy.com/view/Ms2SD1
+ * 
+ * Sun and Sky based on "Two lines atmospheric scattering" by Bananaft
+ * https://www.shadertoy.com/view/MdtXD2
+ *
+ * Starz based on "Star Nursery" by Dave_Hoskins
+ * https://www.shadertoy.com/view/XsfGzH
+ *
+ * License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+ * Contact: drodrigu86@gmail.com
+ */
+
+#define NUM_STEPS 15
+#define PI	 	3.141592
+#define EPSILON 1e-3
+#define EPSILON_NRM (0.1 / iResolution.x)
+
+// sea
+#define NUM_WAVES 9
+#define SEA_SPEED 0.26
+#define SEA_FREQ 0.8
+
+float SEA_HEIGHT = 0.019;
+float SEA_STEEPNESS = 0.1;
+
+const vec3 SEA_WATER_COLOR = vec3(0,0.22,0.33);
+const vec3 SEA_WATER_DEPTH_COLOR = vec3(0.0,0.22,0.83);
+
+vec3 SUN_DIR = normalize( vec3(0.0,0.0,1.0) );
+
+#define SEA_CHOPPY 2.0
+#define ITER_FRAGMENT 12
+#define SEA_TIME (iTime * SEA_SPEED)
+const mat2 octave_m = mat2(1.6,1.2,-1.2,1.6);
+
+struct Wave 
+{ 
+    vec2 direction;
+    float steepness;
+    float amplitude;
+    float frequency;
+    float speed;
+};
+
+Wave[NUM_WAVES] waves;    
+
+// math
+mat3 fromEuler(vec3 ang) 
+{
+	vec2 a1 = vec2(sin(ang.x),cos(ang.x));
+    vec2 a2 = vec2(sin(ang.y),cos(ang.y));
+    vec2 a3 = vec2(sin(ang.z),cos(ang.z));
+    mat3 m;
+    m[0] = vec3(a1.y*a3.y+a1.x*a2.x*a3.x,a1.y*a2.x*a3.x+a3.y*a1.x,-a2.y*a3.x);
+    m[1] = vec3(-a2.y*a1.x,a1.y*a2.y,a2.x);
+    m[2] = vec3(a3.y*a1.x*a2.x+a1.y*a3.x,a1.x*a3.x-a1.y*a3.y*a2.x,a2.y*a3.y);
+	return m;
+}
+
+float hash( vec2 p ) 
+{
+	float h = dot(p,vec2(127.1,311.7));	
+    return fract(sin(h)*43758.5453123);
+}
+
+float noise( in vec2 p ) 
+{
+    vec2 i = floor( p );
+    vec2 f = fract( p );	
+	vec2 u = f*f*(3.0-2.0*f);
+    return -1.0+2.0*mix( mix( hash( i + vec2(0.0,0.0) ), 
+                     hash( i + vec2(1.0,0.0) ), u.x),
+                mix( hash( i + vec2(0.0,1.0) ), 
+                     hash( i + vec2(1.0,1.0) ), u.x), u.y);
+}
+
+float star_hash( float n )
+{
+    return fract(sin(n)*43758.5453123);
+}
+
+float star_noise( in vec2 x )
+{
+    vec2 p = floor(x);
+    vec2 f = fract(x);
+
+    f = f*f*(3.0-2.0*f);
+
+    float n = p.x + p.y*57.0;
+
+    float res = mix(mix( star_hash(n+  0.0), star_hash(n+  1.0),f.x),
+                    mix( star_hash(n+ 57.0), star_hash(n+ 58.0),f.x),f.y);
+
+    return res;
+}
+
+
+float sea_octave(vec2 uv, float choppy) 
+{
+    uv += noise(uv);        
+    vec2 wv = 1.0-abs(sin(uv));
+    vec2 swv = abs(cos(uv));    
+    wv = mix(wv,swv,wv);
+    return pow(1.0-pow(wv.x * wv.y,0.65),choppy);
+}
+
+float map_detailed(vec3 p) 
+{
+    float freq = SEA_FREQ;
+    float amp = SEA_HEIGHT;
+    float choppy = SEA_CHOPPY;
+    vec2 uv = p.xz;
+    
+    float d, h = 0.0;    
+    for(int i = 0; i < ITER_FRAGMENT; i++) 
+    {        
+    	d = sea_octave((uv+SEA_TIME)*freq,choppy);
+    	d += sea_octave((uv-SEA_TIME)*freq,choppy);
+        h += d * amp;        
+    	uv *= octave_m; freq *= 1.66; amp *= 0.22;
+        choppy = mix(choppy,1.0,0.2);
+    }
+    return p.y - h;
+}
+
+// lighting
+float diffuse(vec3 n,vec3 l,float p) 
+{
+    return pow(dot(n,l) * 0.4 + 0.6,p);
+}
+
+float specular(vec3 n,vec3 l,vec3 e,float s) 
+{    
+    float nrm = (s + 8.0) / (PI * 8.0);
+    return pow(max(dot(reflect(e,n),l),0.0),s) * nrm;
+}
+
+// ambient
+vec3 getAmbientColor(vec3 rd) 
+{
+    rd.y = max(rd.y,0.0);
+    
+    vec3 col = vec3(0.0);
+    
+    float sun = max(1.0 - (1.0 + 10.0 * SUN_DIR.y + 1.0 * rd.y) * length(rd - SUN_DIR), 0.0);
+    float falloff = mix(0.1, 0.3, sun) * pow(1.0-rd.y,12.0) * (1.6-SUN_DIR.y);
+    float kOrbit = pow(SUN_DIR.y,0.03);   
+    
+    sun += falloff;
+    sun *= kOrbit;
+    
+    float h = mix(0.3, 1.33, kOrbit); 
+
+    col += mix(vec3(0.3984,0.5117,0.7305), vec3(0.7031,0.4687,0.1055), sun)
+              * ( (0.5 + pow(SUN_DIR.y,0.4) ) * (h-rd.y) 
+                 + pow(sun, 5.2) * SUN_DIR.y * (5.0 + 15.0 * SUN_DIR.y)
+                );
+    
+#define time (iTime+46.0)  
+    // starz
+   	float v = 1.0/( 2. * ( 1. + rd.z ) );
+	vec2 xy = vec2(rd.y * v, rd.x * v);
+    rd.z += time*.002;
+    float s = noise(rd.xz*134.0);
+	s += star_noise(rd.xz*370.);
+	s += star_noise(rd.xz*870.);
+	s = pow(s,19.0) * 0.00000001 * max(rd.y, 0.0);
+	if (s > 0.0)
+	{
+		vec3 backStars = vec3((1.0-sin(xy.x*20.0+time*13.0*rd.x+xy.y*30.0))*.5*s,s, s); 
+		col += (1.0 - kOrbit) * backStars;
+	}
+    
+    return col;
+}
+
+// sea
+void fill_waves(int index, int count, 
+                float steepness, float freq, float amp, float speed, 
+                float kFreq, float kAmp, float kSpeed,
+                vec2 direction, in mat2 directionTransform)
+{
+    for(int i=index; i < count; ++i)
+    {
+        waves[i] = Wave(normalize(direction), steepness/(amp*freq), amp, freq, speed);
+        
+        // update
+        direction *= directionTransform;
+        freq *=kFreq;
+        amp *= kAmp;
+        speed *= kSpeed;
+    }
+}
+
+void initWaves()
+{
+    vec2 direction = vec2(-1.0, 0.0);
+    float fwaves = float(NUM_WAVES);
+    
+    float steepness = SEA_STEEPNESS/fwaves;
+    float freq = SEA_FREQ;
+    float amp = SEA_HEIGHT;
+    float speed = SEA_SPEED;
+    
+    float angle = -2.0*PI/fwaves;
+    float cosa = cos(angle);
+    float sina = sin(angle);
+    mat2 directionTransform = mat2(cosa, sina, -sina, cosa);
+    
+    int lowWaves = int(0.5*fwaves);
+    int highWaves = NUM_WAVES - lowWaves;
+    
+    // Low freq waves
+    fill_waves(0, lowWaves, steepness, freq, amp, speed, 0.66, 1.9, 0.33, direction, directionTransform);
+    
+    // High freq waves
+    fill_waves(lowWaves, NUM_WAVES, steepness, freq, 0.001, speed, 1.33, 1.43, 0.99, direction, directionTransform);
+}
+
+vec3 getSeaColor(vec3 origin, vec3 p, vec3 n, vec3 l, vec3 eye, vec3 dist) 
+{  
+    float fresnel = clamp(1.0 - dot(n,-eye), 0.0, 1.0);
+    fresnel = pow(fresnel,3.0) * 0.65;
+        
+    vec3 reflected = getAmbientColor(reflect(eye,n));    
+    vec3 refracted = SEA_WATER_COLOR + diffuse(n,l,80.0) * SEA_WATER_DEPTH_COLOR * 0.12; 
+    
+    vec3 color = mix(refracted,reflected,fresnel);
+    
+    float atten = max(1.0 - dot(dist,dist) * 0.001, 0.0);
+    color += SEA_WATER_DEPTH_COLOR * (p.y - SEA_HEIGHT) * 0.18 * atten;
+    
+    color += vec3(specular(n,l,eye,60.0));
+    
+    return color;  
+}
+
+// tracing
+vec3 gerstner(in vec3 p)
+{
+    vec3 g = vec3(p.xz, 0.0);
+    
+    const int len = waves.length();
+    vec3 acc = vec3(0.0);
+    for(int i = 0; i < len; i++) 
+    {   
+        Wave wave = waves[i];
+        float period = wave.frequency * dot(wave.direction, g.xy) + iTime * wave.speed;
+        float offset = wave.amplitude * wave.steepness * cos( period );
+        acc.x += offset * wave.direction.x; 
+        acc.y += offset * wave.direction.y;
+    	acc.z += wave.amplitude*sin( period );
+    }
+    
+    g += acc;
+    
+    return g;
+}
+
+vec3 gerstner_normal(in vec3 p)
+{
+    vec2 uv = p.xz; 
+    vec3 n = vec3(0.0);
+    
+    const int len = waves.length();
+    for(int i = 0; i < len; i++) 
+    { 
+        Wave wave = waves[i];
+        float period = wave.frequency*dot(wave.direction, uv) + iTime * wave.speed;
+        float WA = wave.frequency*wave.amplitude;
+        float C = cos(period); 
+        float S = sin(period);
+        float WAC = WA*C;
+        
+		n.x += wave.direction.x * WAC;
+        n.y += wave.direction.y * WAC;
+        n.z += wave.steepness * WA * S;
+    }
+    
+    n.x = - n.x;
+    n.y = - n.y;
+    n.z = 1.0 - n.z;
+    
+    return normalize(n.xzy);
+}
+
+vec3 gerstner_noise_normal(vec3 g, float eps)
+{   
+    // noise normal
+    vec3 n;
+    n.y = map_detailed(g);    
+    n.x = map_detailed(vec3(g.x+eps,g.y,g.z)) - n.y;
+    n.z = map_detailed(vec3(g.x,g.y,g.z+eps)) - n.y;
+    n.y = eps;
+    n = normalize(n);
+    
+    // gerstner normal
+    vec3 gn = gerstner_normal(g).xzy;
+    
+    // mix normals
+    n.x += gn.x;
+    n.y += gn.y;
+    n.z *= gn.z;
+    
+    return normalize(n);
+}
+
+vec3 getNormal(vec3 p, float eps) 
+{
+    vec3 n;
+    n.y = p.y - gerstner(p).z;    
+    n.x = p.y -gerstner(vec3(p.x+eps,0.0,p.z)).z - n.y;
+    n.z = p.y -gerstner(vec3(p.x,0.0,p.z+eps)).z - n.y;
+    n.y = eps;
+    return normalize(n);
+}
+
+void gerstner_tracer(vec3 ori, vec3 dir, out vec3 p)
+{
+    float tm = 0.0;
+    float tx = 1000.0;
+    vec3 pos = ori + dir * tx;
+    vec3 g = gerstner(pos);
+    float hx = pos.y - g.z;
+    if(hx > 0.0)
+    {
+        p = g.xzy;
+        return;
+    }
+    
+    pos = ori + dir * tm;
+    float hm = pos.y - gerstner(pos).z;    
+    float tmid = 0.0;
+    g = vec3(0.0);
+    for(int i = 0; i < NUM_STEPS; i++) 
+    {
+        tmid = mix(tm,tx, hm/(hm-hx));                   
+        p = ori + dir * tmid;             
+        g = gerstner(p);
+    	float hmid = p.y -g.z;
+		if(hmid < 0.0) 
+        {
+        	tx = tmid;
+            hx = hmid;
+        } 
+        else 
+        {
+            tm = tmid;
+            hm = hmid;
+        }
+    }
+    
+    p = g.xzy;
+}
+
+// main
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) 
+{
+    // uv map
+	vec2 uv = fragCoord.xy / iResolution.xy;
+    uv = uv * 2.0 - 1.0;
+    uv.x *= iResolution.x / iResolution.y;    
+
+    // sun
+    const float kSpeed = 0.02;
+    const float period = 2.0*PI;
+    const float gamma = kSpeed*period;
+    float alpha = gamma*iTime;
+    float sine = sin(alpha);
+    float inOrbit = sine > 0.0 ? 1.0 : 0.0;
+    
+    float sunAngle = -alpha;
+    mat3 sunRotation = fromEuler( vec3(0.0, sunAngle, 0.0) );
+    SUN_DIR = inOrbit*normalize(sunRotation * SUN_DIR) + (1.0 -inOrbit)*vec3(0.0);
+    
+    //sea
+    float amount = max(sine, 0.0);
+    SEA_HEIGHT = mix( 0.022, 0.099, amount );
+    SEA_STEEPNESS = mix( 0.1, 1.0, amount );
+    initWaves();
+    
+    // ray  
+    vec3 ang = vec3(0.0, iMouse.y*0.01, iMouse.x*0.01);
+    vec3 ori = vec3(0.0,3.0,5.0);
+    vec3 dir = normalize(vec3(uv.xy,-2.0)); 
+    dir = normalize(dir) * fromEuler(ang);
+    
+    // tracing
+    vec3 p;
+    gerstner_tracer(ori, dir, p);
+    vec3 dist = p - ori;
+    //vec3 n = gerstner_normal(p);
+    //vec3 n = getNormal(p, dot(dist,dist) * EPSILON_NRM);
+    vec3 n = gerstner_noise_normal(p, dot(dist,dist) * EPSILON_NRM);
+    
+    // color
+    vec3 color = mix(
+        getAmbientColor(dir),
+        getSeaColor(ori, p,n,SUN_DIR,dir,dist), 
+    	pow(smoothstep(0.0,-0.05,dir.y),0.2));
+    
+    // post
+	fragColor = vec4(pow(color,vec3(0.75)), 1.0);
+}

@@ -1,0 +1,140 @@
+float PI = 3.1415926535897932;
+float E = 2.7182818284590;
+float cameraViewDistance = 1.;  // distance between view origin and canvas
+vec3 camPos = vec3(0.0, 5.0, 0.0);
+vec3 worldDown = vec3(0.0, -1.0, 0.0);
+vec3 lightDir = normalize(vec3(0.1, -1., 0.2));
+vec4 lightColor = vec4(0.9, 0.9, 0.8, 1.);
+vec4 waterAlbedo = vec4(8./255., 83./255., 141./255., 1.);
+vec4 ambient = vec4(.0, .05, .1, 1.);
+float refraction = 1.33333333333 / 1.00029;
+
+float rand(vec2 n)
+{
+    return 0.5 + 0.5 * fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);
+}
+
+vec2 calUV(vec2 fragCoord)
+{
+    vec2 uv = fragCoord.xy / iResolution.xy - 0.5;
+	//uv.x *= iResolution.x / iResolution.y;
+    return uv;
+}
+
+// construct view ray
+vec3 calViewDir(vec2 uv)
+{
+    vec3 viewDir = vec3(uv, cameraViewDistance) + vec3(0, -.8, 0.);
+    viewDir = normalize(viewDir);
+    return viewDir;
+}
+
+// sea level pos
+vec3 calWorldPos(vec3 o, vec3 viewDir)
+{   
+    float magnitude = o.y / dot(viewDir, worldDown);
+    vec3 worldPos = o + viewDir * magnitude;
+    return worldPos;
+}
+
+// gerstner wave
+float calWaveHeight(vec2 pos, float amplitude, float steepness, float speed, float wav)
+{
+    vec3 offs;
+    pos.x += 1.0 * amplitude * cos(pos.x - iTime * speed + ( pos.x + pos.y ));
+    pos.y += steepness * amplitude * sin(pos.y - iTime * speed * 0.5 + ( pos.x + pos.y ));
+    float c = 0.3 * sin( wav * ( amplitude ) * ( pos.x + pos.y ) + iTime );
+    return c;
+}
+
+float waveDistanceField(vec3 pos)
+{
+    float height = 0.;
+    float amplitude = 1.;
+    float frequency = 1.;
+    float steepness = 1.5;
+    float speed = 1.5;
+    float wav = 1.9;
+
+   // for (int i = 0; i < 10; i++)
+    //{
+        vec2 xz = pos.xz;
+        height += calWaveHeight(xz, amplitude, steepness, speed, wav);
+   // }
+
+    return pos.y - height;
+}
+
+// float calWaveHeight(vec3 origin, vec3 pos, float waveLengthParam, float frequencyParam, float amplitudeParam)
+// {
+//     float dist = length(vec3(pos.x, 0., pos.z) - origin);
+//     float attenuation = pow(E / 2.4, -dist);
+//     float y = sin(dist * waveLengthParam - iTime * frequencyParam) * amplitudeParam * attenuation;
+//     return y;
+// }
+
+// float waveDistanceField(vec3 worldPos)
+// {
+//     vec3 o1 = calWorldPos(camPos, calViewDir(vec2(-.8, -.3)));
+//     vec3 o2 = calWorldPos(camPos, calViewDir(vec2(-.4, -.7)));
+//     vec3 o3 = calWorldPos(camPos, calViewDir(vec2(.8, -.3)));
+//     vec3 o4 = calWorldPos(camPos, calViewDir(vec2(.4, -.7)));
+    
+//     return worldPos.y - (calWaveHeight(o1, worldPos, 5., 2., .2)
+//         					+ calWaveHeight(o2, worldPos, 4., 3.2, .1) 
+//         					+ calWaveHeight(o3, worldPos, 4.2, 1., .13) 
+//         					+ calWaveHeight(o4, worldPos, 3., 2.7, .2));
+// }
+
+// raymarching
+float intersect(vec3 o, vec3 dir)
+{
+    float d = 0.;
+    //float delta = .01;
+    for (int i = 0; i <= 1000; i++)
+    {
+        float dist = waveDistanceField(o + dir * d);
+        if (dist < .01)
+            return d;
+        d += dist * .1;
+    }
+    return 0.;
+}
+
+// normal = (f'(x), f'(y), f'(z)) = (dx, d, dz)
+vec3 calWaveNormal(vec3 worldPos)
+{
+    float d = .1;
+    vec3 normal = vec3((waveDistanceField(worldPos + vec3(d, 0., 0.)) - waveDistanceField(worldPos - vec3(d, 0., 0.))),
+                       2. * d,
+                       waveDistanceField(worldPos + vec3(0., 0., d)) - waveDistanceField(worldPos - vec3(0., 0., d)));
+    return normalize(normal);
+}
+
+vec4 calColor(vec3 o, vec3 dir)
+{
+    float d = intersect(o, dir);
+    vec3 pos = o + dir * d;
+    vec3 normal = calWaveNormal(pos);
+	vec3 refl = normalize(reflect(dir, normal));
+    float spec = pow(max(0., dot(refl, -lightDir)), 20.);
+    
+    dir = refract(dir, normal, refraction);
+    
+    vec4 color = ambient + lightColor * waterAlbedo * spec;
+    return color * 10.;
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+    vec2 uv = calUV(fragCoord);
+    vec3 viewDir = calViewDir(uv);
+    fragColor = calColor(camPos, viewDir);
+}
+
+
+// raymarching
+// refraction reflection
+// fresnel
+// albedo
+// 
